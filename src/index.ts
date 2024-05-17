@@ -18,14 +18,23 @@ export default {
 			"Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, OPTIONS",
 			"Access-Control-Allow-Headers": "*",
 		}
+
 		if (supportedDomains) {
-			const origin = request.headers.get('Origin')
-			if (origin && supportedDomains.includes(origin)) {
-				corsHeaders['Access-Control-Allow-Origin'] = origin
+			const origin = request.headers.get('Origin');
+			if (origin) {
+				const isWhitelisted = supportedDomains.some((domain) => {
+					const regex = new RegExp(`^${domain.replace(/\*/g, '.*')}$`);
+					return regex.test(origin);
+				});
+
+				if (isWhitelisted) {
+					corsHeaders['Access-Control-Allow-Origin'] = origin;
+				}
 			}
 		} else {
-			corsHeaders['Access-Control-Allow-Origin'] = '*'
+			corsHeaders['Access-Control-Allow-Origin'] = '*';
 		}
+
 
 		if (request.method === "OPTIONS") {
 			return new Response(null, {
@@ -34,16 +43,17 @@ export default {
 			});
 		}
 
+		const { pathname, search, searchParams } = new URL(request.url);
+		const CLUSTER = searchParams.get('cluster') || 'mainnet';
+
 		const upgradeHeader = request.headers.get('Upgrade')
 
 		if (upgradeHeader || upgradeHeader === 'websocket') {
-			return await fetch(`https://mainnet.helius-rpc.com/?api-key=${env.HELIUS_API_KEY}`, request)
+			return await fetch(`https://${CLUSTER}.helius-rpc.com/?api-key=${env.HELIUS_API_KEY}`, request)
 		}
 
-
-		const { pathname, search } = new URL(request.url)
 		const payload = await request.text();
-		const proxyRequest = new Request(`https://${pathname === '/' ? 'mainnet.helius-rpc.com' : 'api.helius.xyz'}${pathname}?api-key=${env.HELIUS_API_KEY}${search ? `&${search.slice(1)}` : ''}`, {
+		const proxyRequest = new Request(`https://${pathname === '/' ? `${CLUSTER}.helius-rpc.com` : 'api.helius.xyz'}${pathname}?api-key=${env.HELIUS_API_KEY}${search ? `&${search.slice(1)}` : ''}`, {
 			method: request.method,
 			body: payload || null,
 			headers: {
