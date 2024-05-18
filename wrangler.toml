@@ -1,3 +1,8 @@
 name = "rpc-proxy" # todo
 main = "./src/index.ts"
 compatibility_date = "2022-05-03"
+
+# Define KV namespace bindings
+[[kv_namespaces]]
+binding = "RATE_LIMIT_NAMESPACE"
+id = "ad7cab460b40437c9a17028cea45021a"
