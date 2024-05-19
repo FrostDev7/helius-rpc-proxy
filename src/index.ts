@@ -21,7 +21,13 @@ export default {
 			const origin = request.headers.get('Origin');
 			if (origin) {
 				const isWhitelisted = supportedDomains.some((domain) => {
-					const regex = new RegExp(`^${domain.replace(/\*/g, '.*').replace(/\./g, '\\.').replace(/-/g, '\\-')}$`);
+					// Convert domain pattern to a regex pattern string
+					const domainPattern = domain
+						.replace(/\./g, '\\.')        // Escape dots
+						.replace(/\*/g, '[a-zA-Z0-9-]+'); // Replace * with valid subdomain pattern
+				
+					const regexPattern = `^${domainPattern}$`;
+					const regex = new RegExp(regexPattern);
 					return regex.test(origin);
 				});
 
