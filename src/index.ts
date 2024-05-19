@@ -68,7 +68,7 @@ export default {
 
 		// Increment request count and update KV store
 		count += 1;
-		await env.RATE_LIMIT_NAMESPACE.put(windowKey, count.toString(), { expirationTtl: RATE_LIMIT_TIME_WINDOW });
+		await env.RATE_LIMIT_NAMESPACE.put(windowKey, count.toString(), { expirationTtl: 60 });
 
 		return handleRequest(request, env, corsHeaders);
 	},
