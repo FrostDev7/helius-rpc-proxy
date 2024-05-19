@@ -1,29 +1,27 @@
 interface Env {
 	CORS_ALLOW_ORIGIN: string;
 	HELIUS_API_KEY: string;
+	RATE_LIMIT_NAMESPACE: KVNamespace;
+	RATE_LIMIT_MAX_REQUESTS: string;
+	RATE_LIMIT_TIME_WINDOW: string;
+	WHITELISTED_IPS: string;
 }
 
 export default {
 	async fetch(request: Request, env: Env) {
-
-		// If the request is an OPTIONS request, return a 200 response with permissive CORS headers
-		// This is required for the Helius RPC Proxy to work from the browser and arbitrary origins
-		// If you wish to restrict the origins that can access your Helius RPC Proxy, you can do so by
-		// changing the `*` in the `Access-Control-Allow-Origin` header to a specific origin.
-		// For example, if you wanted to allow requests from `https://example.com`, you would change the
-		// header to `https://example.com`. Multiple domains are supported by verifying that the request
-		// originated from one of the domains in the `CORS_ALLOW_ORIGIN` environment variable.
+		// Parse the allowed origins from the environment variable
 		const supportedDomains = env.CORS_ALLOW_ORIGIN ? env.CORS_ALLOW_ORIGIN.split(',') : undefined;
 		const corsHeaders: Record<string, string> = {
 			"Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, OPTIONS",
 			"Access-Control-Allow-Headers": "*",
-		}
+		};
 
+		// Handle CORS
 		if (supportedDomains) {
 			const origin = request.headers.get('Origin');
 			if (origin) {
 				const isWhitelisted = supportedDomains.some((domain) => {
-					const regex = new RegExp(`^${domain.replace(/\*/g, '.*')}$`);
+					const regex = new RegExp(`^${domain.replace(/\*/g, '.*').replace(/\./g, '\\.').replace(/-/g, '\\-')}$`);
 					return regex.test(origin);
 				});
 
@@ -35,7 +33,7 @@ export default {
 			corsHeaders['Access-Control-Allow-Origin'] = '*';
 		}
 
-
+		// Respond to OPTIONS requests with CORS headers
 		if (request.method === "OPTIONS") {
 			return new Response(null, {
 				status: 200,
@@ -43,30 +41,64 @@ export default {
 			});
 		}
 
-		const { pathname, search, searchParams } = new URL(request.url);
-		const CLUSTER = searchParams.get('cluster') || 'mainnet';
+		// Extract client identifier (e.g., IP address)
+		const clientIdentifier = request.headers.get('CF-Connecting-IP') || 'unknown';
 
-		const upgradeHeader = request.headers.get('Upgrade')
-
-		if (upgradeHeader || upgradeHeader === 'websocket') {
-			return await fetch(`https://${CLUSTER}.helius-rpc.com/?api-key=${env.HELIUS_API_KEY}`, request)
+		// Check if the client IP is whitelisted
+		const whitelistedIps = env.WHITELISTED_IPS ? env.WHITELISTED_IPS.split(',') : [];
+		if (whitelistedIps.includes(clientIdentifier)) {
+			return handleRequest(request, env, corsHeaders); // Proceed without rate limiting
 		}
 
-		const payload = await request.text();
-		const proxyRequest = new Request(`https://${pathname === '/' ? `${CLUSTER}.helius-rpc.com` : 'api.helius.xyz'}${pathname}?api-key=${env.HELIUS_API_KEY}${search ? `&${search.slice(1)}` : ''}`, {
-			method: request.method,
-			body: payload || null,
-			headers: {
-				'Content-Type': 'application/json',
-				'X-Helius-Cloudflare-Proxy': 'true',
-			}
-		});
+		// Rate limiting logic
+		const RATE_LIMIT_MAX_REQUESTS = parseInt(env.RATE_LIMIT_MAX_REQUESTS) || 50;
+		const RATE_LIMIT_TIME_WINDOW = parseInt(env.RATE_LIMIT_TIME_WINDOW) || 1;
+		const currentTime = Math.floor(Date.now() / (RATE_LIMIT_TIME_WINDOW * 1000)); // current time in the specified intervals
+		const windowKey = `${clientIdentifier}:${currentTime}`; // Unique key for the time window
 
-		return await fetch(proxyRequest).then(res => {
-			return new Response(res.body, {
-				status: res.status,
-				headers: corsHeaders
+		let requestCount = await env.RATE_LIMIT_NAMESPACE.get(windowKey); // Retrieve the request count from KV
+		let count = requestCount ? parseInt(requestCount) : 0;
+
+		if (count >= RATE_LIMIT_MAX_REQUESTS) {
+			return new Response('Rate limit exceeded', {
+				status: 429,
+				headers: corsHeaders,
 			});
-		});
+		}
+
+		// Increment request count and update KV store
+		count += 1;
+		await env.RATE_LIMIT_NAMESPACE.put(windowKey, count.toString(), { expirationTtl: 60 });
+
+		return handleRequest(request, env, corsHeaders);
 	},
 };
+
+async function handleRequest(request: Request, env: Env, corsHeaders: Record<string, string>) {
+	const { pathname, search, searchParams } = new URL(request.url);
+	const CLUSTER = searchParams.get('cluster') || 'mainnet';
+	const upgradeHeader = request.headers.get('Upgrade');
+
+	// Handle WebSocket requests
+	if (upgradeHeader || upgradeHeader === 'websocket') {
+		return await fetch(`https://${CLUSTER}.helius-rpc.com/?api-key=${env.HELIUS_API_KEY}`, request);
+	}
+
+	// Handle regular requests
+	const payload = await request.text();
+	const proxyRequest = new Request(`https://${pathname === '/' ? `${CLUSTER}.helius-rpc.com` : 'api.helius.xyz'}${pathname}?api-key=${env.HELIUS_API_KEY}${search ? `&${search.slice(1)}` : ''}`, {
+		method: request.method,
+		body: payload || null,
+		headers: {
+			'Content-Type': 'application/json',
+			'X-Helius-Cloudflare-Proxy': 'true',
+		}
+	});
+
+	return await fetch(proxyRequest).then(res => {
+		return new Response(res.body, {
+			status: res.status,
+			headers: corsHeaders
+		});
+	});
+}
